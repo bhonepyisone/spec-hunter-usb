@@ -1,0 +1,70 @@
+#!/bin/bash
+# Pre-commit hook — Spec Hunter USB Collector
+# Full 5-step verification pipeline
+set -e
+
+echo "═══════════════════════════════════════════"
+echo "  PRE-COMMIT VERIFICATION PIPELINE (USB)"
+echo "═══════════════════════════════════════════"
+
+# ── Step 1: Static Security Scan ──
+echo ""
+echo "🔍 Step 1: Static Security Scan"
+HAS_SECURITY_ISSUE=0
+
+# Check for .env or config.yaml staged
+STAGED_SECRETS=*** diff --cached --name-only | grep -E '\.env$|config\.yaml$|| true)catif [ -n "$STAGED_SECRETS" ]; then
+  echo "❌ SECURITY: Secrets file staged: $STAGED_SECRETS"
+  echo "   Remove: git reset HEAD $STAGED_SECRETS"
+  HAS_SECURITY_ISSUE=1
+fi
+
+# Check for hardcoded secrets in staged Python files
+STAGED_PY=$(git diff --cached --name-only | grep '\.py$' || true)
+if [ -n "$STAGED_PY" ]; then
+  for f in $STAGED_PY; do
+    if grep -q "api_key.*=.*['\"]sk-" "$f" 2>/dev/null || grep -qE "(password|secret)\s*=\s*['\"][^'\"]{4,}['\"]" "$f" 2>/dev/null; then
+      echo "❌ SECURITY: Hardcoded secret in $f"
+      HAS_SECURITY_ISSUE=1
+    fi
+  done
+fi
+
+if [ "$HAS_SECURITY_ISSUE" -eq 1 ]; then
+  exit 1
+fi
+echo "   ✅ No security issues found"
+
+# ── Step 2: Python Syntax Check ──
+echo ""
+echo "🧪 Step 2: Python Syntax Check"
+if [ -n "$STAGED_PY" ]; then
+  for f in $STAGED_PY; do
+    python3 -m py_compile "$f" 2>/dev/null && echo "   ✅ $f — syntax OK" || { echo "   ❌ Syntax error in $f"; exit 1; }
+  done
+fi
+
+# ── Step 3: Self-Review Checklist ──
+echo ""
+echo "📋 Step 3: Self-Review Checklist"
+echo "   [ ] All collectors have primary → fallback → graceful N/A"
+echo "   [ ] Brand router handles Dell/Lenovo/HP/Unknown correctly"
+echo "   [ ] No hardcoded endpoint URLs or API keys"
+echo "   [ ] Tested on real hardware (run collector script)"
+echo "   [ ] TEST.md updated with test results"
+
+# ── Step 4: Independent Reviewer Reminder ──
+echo ""
+echo "🤖 Step 4: Independent Reviewer"
+echo "   For collector changes:"
+echo "   claude -p 'Review collector/ for fallback chains, brand parsing, error handling'"
+
+# ── Step 5: Auto-Fix Reminder ──
+echo ""
+echo "🔧 Step 5: Auto-Fix (if reviewer found issues)"
+echo "   Max 2 cycles. Never same agent as implementer."
+
+echo ""
+echo "═══════════════════════════════════════════"
+echo "  ✅ Pre-commit checks complete"
+echo "═══════════════════════════════════════════"
