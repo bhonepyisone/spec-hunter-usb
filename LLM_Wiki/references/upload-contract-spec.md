@@ -84,6 +84,19 @@ Production endpoint: `https://us-central1-<project>.cloudfunctions.net/uploadLap
 | `bad_sectors` | number | No | `null` | SATA-specific |
 | `smart_status` | string | No | `"N/A"` | "PASS", "FAIL", "N/A" |
 
+### storage2 (second drive — only included if present)
+
+Same schema as `storage`. Omit entirely if only one drive detected.
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `model` | string | No | `"N/A"` | e.g. "WD Blue 1TB HDD" |
+| `capacity_gb` | number | No | `null` | |
+| `interface` | string | No | `"N/A"` | |
+| `health_pct` | number | No | `null` | SMART health % |
+| `power_on_hours` | number | No | `null` | |
+| `smart_status` | string | No | `"N/A"` | |
+
 ### battery
 
 | Field | Type | Required | Default | Notes |

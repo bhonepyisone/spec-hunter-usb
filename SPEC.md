@@ -57,16 +57,16 @@ Alpine Linux loads (headless)
 
 ### Collector Modules
 
-| Module | Data Collected | Commands Used | Fallback |
-|--------|---------------|---------------|----------|
-| identity.py | brand, model, serial, BIOS, UUID, motherboard, asset tag | `dmidecode -s system-*` + brand-specific parsing | /sys/class/dmi/id/* |
-| cpu.py | name, generation, cores, threads, base/turbo clock | `lscpu`, `/proc/cpuinfo` | Parse /proc/cpuinfo directly |
-| ram.py | total, slots, speed, DDR type, manufacturer | `dmidecode -t 17` | N/A |
-| storage.py | model, capacity, interface, SMART health, hours, writes, temp | `smartctl -a`, `nvme smart-log` | Parse /sys/block/*/size |
-| battery.py | design/current capacity, cycles, health %, manufacturer, serial | `upower -i /org/freedesktop/UPower/devices/battery_BAT0` | /sys/class/power_supply/BAT0/* |
-| display.py | resolution, manufacturer, size, model | `edid-decode` | Parse /sys/class/drm/*/edid |
-| network.py | WiFi card, Bluetooth, MAC, LAN | `lshw -class network`, `hciconfig`, `ip link` | /sys/class/net/*/address |
-| camera.py | camera exists, device path | `v4l2-ctl --list-devices`, `ls /dev/video*` | N/A, camera exists = bool |
+|| Module | Data Collected | Commands Used | Fallback |
+||--------|---------------|---------------|----------|
+|| identity.py | brand, model, serial, BIOS, UUID, motherboard, asset tag | `dmidecode -s system-*` + brand-specific parsing | /sys/class/dmi/id/* |
+|| cpu.py | name, generation, cores, threads, base/turbo clock | `lscpu`, `/proc/cpuinfo` | Parse /proc/cpuinfo directly |
+|| ram.py | total, slots, speed (MHz), DDR type, manufacturer | `dmidecode -t 17` | N/A |
+|| storage.py | **primary + secondary** drive (model, capacity, interface, SMART health %, power-on hours, cycles, writes, temp, bad sectors) | `smartctl -a`, `nvme smart-log`, `lsblk` | Parse /sys/block/*/size |
+|| battery.py | design/current capacity, cycles, health %, manufacturer, serial | `upower -i /org/freedesktop/UPower/devices/battery_BAT0` | /sys/class/power_supply/BAT0/* |
+|| display.py | resolution, manufacturer, size, model | `edid-decode` | Parse /sys/class/drm/*/edid |
+|| network.py | WiFi card, Bluetooth, MAC, LAN | `lshw -class network`, `hciconfig`, `ip link` | /sys/class/net/*/address |
+|| camera.py | camera exists, device path | `v4l2-ctl --list-devices`, `ls /dev/video*` | N/A, camera exists = bool |
 
 ### Brand-Specific dmidecode Parsing
 
@@ -110,12 +110,12 @@ Packages included: python3, py3-pip, smartmontools, nvme-cli, dmidecode, upower,
 | 4 | identity.py — brand, model, serial collected | Run on a laptop → JSON has brand/model/serial filled |
 | 5 | cpu.py — name, cores, threads, clocks collected | JSON has all CPU fields populated |
 | 6 | ram.py — total, slots, speed, DDR type collected | JSON has RAM fields populated |
-| 7 | storage.py — model, capacity, SMART data collected | JSON has storage fields with health_pct and power_on_hours |
+|| 7 | storage.py — primary + secondary drive model, capacity, SMART data collected | JSON has `storage` and `storage2` objects with health_pct and power_on_hours |
 | 8 | battery.py — health %, cycles collected | JSON has battery fields populated |
 | 9 | display.py — resolution, manufacturer collected | JSON has display fields |
 | 10 | network.py — WiFi, BT, MAC, LAN collected | JSON has all network fields |
 | 11 | camera.py — camera detection | JSON has camera.exists boolean |
-| 12 | uploader.py — POST JSON to endpoint | JSON appears in web app as new laptop record |
+| 12 | uploader.py — POST JSON to endpoint | JSON appears in Electronic ERP as a new inventory item (via Firebase Function) |
 | 13 | Fallback chains work (dmidecode fails → sysfs) | Test on Surface or VM → graceful fallback |
 | 14 | Brand router for Dell/Lenovo/HP serials | Test on each brand → correct serial format |
 | 15 | Auto-poweroff after successful upload | Wait 10s after upload → machine powers off |

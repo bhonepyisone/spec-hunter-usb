@@ -13,14 +13,17 @@ echo "🔍 Step 1: Static Security Scan"
 HAS_SECURITY_ISSUE=0
 
 # Check for .env or config.yaml staged
-STAGED_SECRETS=*** diff --cached --name-only | grep -E '\.env$|config\.yaml$|| true)catif [ -n "$STAGED_SECRETS" ]; then
+STAGED_SECRETS=$(git diff --cached --name-only | grep -E '\.env$|config\.yaml$' || true)
+if [ -n "$STAGED_SECRETS" ]; then
   echo "❌ SECURITY: Secrets file staged: $STAGED_SECRETS"
   echo "   Remove: git reset HEAD $STAGED_SECRETS"
   HAS_SECURITY_ISSUE=1
 fi
 
-# Check for hardcoded secrets in staged Python files
-STAGED_PY=$(git diff --cached --name-only | grep '\.py$' || true)
+# Check for hardcoded secrets in staged SOURCE files (collector/), not test
+# fixtures — tests legitimately contain dummy creds (e.g. api_key="bad-key"
+# to exercise the HTTP 401 path).
+STAGED_PY=$(git diff --cached --name-only | grep '^collector/.*\.py$' || true)
 if [ -n "$STAGED_PY" ]; then
   for f in $STAGED_PY; do
     if grep -q "api_key.*=.*['\"]sk-" "$f" 2>/dev/null || grep -qE "(password|secret)\s*=\s*['\"][^'\"]{4,}['\"]" "$f" 2>/dev/null; then

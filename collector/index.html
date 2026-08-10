@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spec Hunter — USB Collector</title>
+<style>
+  :root {
+    --bg: #020617; --surface: #1a1e2f; --surface2: #0f172a;
+    --accent: #22c55e; --warn: #ef4444; --text: #f8fafc; --muted: #94a3b8;
+    --border: #334155;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: "Fira Sans", system-ui, sans-serif; min-height: 100vh; }
+  header { padding: 20px 24px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+  header h1 { font-family: "Fira Code", monospace; font-size: 18px; }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 80px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 28px 0 12px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  dl.specs { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .spec-row { display: flex; justify-content: space-between; gap: 16px; font-size: 14px; }
+  .spec-row dt { color: var(--muted); flex-shrink: 0; }
+  .spec-row dd { text-align: right; overflow-wrap: anywhere; }
+  input[type=text] { width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 16px; }
+  label.block { display: block; margin: 14px 0 6px; font-size: 13px; color: var(--muted); }
+  .test { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; background: var(--surface); }
+  .test .t-head { display: flex; justify-content: space-between; align-items: center; }
+  .test .t-name { font-weight: 600; font-size: 15px; }
+  .seg { display: flex; gap: 8px; }
+  .seg button { flex: 1; padding: 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 14px; cursor: pointer; }
+  .seg button.on.pass { background: #14532d; border-color: var(--accent); color: #bbf7d0; }
+  .seg button.on.fail { background: #7f1d1d; border-color: var(--warn); color: #fecaca; }
+  .test input.note { width: 100%; margin-top: 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 14px; }
+  .test input.note::placeholder { color: var(--muted); }
+  .test .note-box { display: none; }
+  .test .note-box.show { display: block; }
+  button.primary { display: block; width: 100%; padding: 16px; margin-top: 24px; border-radius: 12px; border: 0; background: var(--accent); color: #052e16; font-size: 17px; font-weight: 700; cursor: pointer; }
+  button.abort { display: block; width: 100%; padding: 12px; margin-top: 10px; border-radius: 12px; border: 1px solid var(--warn); background: transparent; color: var(--warn); font-size: 14px; cursor: pointer; }
+  #status { margin-top: 16px; font-size: 14px; color: var(--muted); text-align: center; }
+  #status.ok { color: var(--accent); }
+  #status.err { color: var(--warn); }
+  .kbd { font-family: "Fira Code", monospace; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header><span class="dot"></span><h1>Spec Hunter — USB Collector</h1></header>
+<main>
+  <h2>Collected hardware</h2>
+  <div class="card"><dl class="specs" id="specs"><dd style="color:var(--muted)">Loading…</dd></dl></div>
+
+  <h2>Customer</h2>
+  <div class="card"><label class="block" for="customer">Customer name</label><input type="text" id="customer" autocomplete="off" placeholder="e.g. Bhone"></div>
+
+  <h2>Manual tests — run on THIS laptop</h2>
+  <div id="tests"></div>
+
+  <button class="primary" id="submit" disabled>Upload &amp; power off</button>
+  <button class="abort" id="abort">Abort (power off, no upload)</button>
+  <div id="status"></div>
+</main>
+<script>
+const state = {
+  tests: [
+    { key: "keyboard", name: "Keyboard", opts: ["key", "space", "enter"] },
+    { key: "display", name: "Display / LCD", opts: ["dot", "lines", "bleed"] },
+    { key: "sound", name: "Sound (L/R)", opts: ["left", "right", "none"] },
+    { key: "microphone", name: "Microphone", opts: ["ok", "bad"] },
+    { key: "touchpad", name: "Touchpad", opts: ["ok", "bad"] },
+    { key: "ports", name: "USB / Ports", opts: ["ok", "bad"] },
+  ],
+  results: {},
+};
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+async function load() {
+  const r = await fetch("/api/state");
+  const { payload } = await r.json();
+  const rows = [
+    ["Brand", payload.identity?.brand], ["Model", payload.identity?.model],
+    ["Serial", payload.identity?.serial_number], ["CPU", payload.cpu?.name],
+    ["Cores", payload.cpu?.cores], ["RAM", payload.ram?.total_gb ? payload.ram.total_gb + " GB" : null],
+    ["RAM speed", payload.ram?.speed], ["Storage", payload.storage?.model],
+    ["Storage size", payload.storage?.capacity_gb ? payload.storage.capacity_gb + " GB" : null],
+    ["SSD health", payload.storage?.health_pct ? payload.storage.health_pct + "%" : null],
+    ["Power-on hours", payload.storage?.power_on_hours], ["Battery health", payload.battery?.health_pct ? payload.battery.health_pct + "%" : null],
+    ["Battery cycles", payload.battery?.cycle_count], ["Display", payload.display?.resolution],
+    ["Screen size", payload.display?.screen_size_inch ? payload.display.screen_size_inch + " in" : null],
+    ["WiFi", payload.network?.wifi_card], ["Bluetooth", payload.network?.bluetooth],
+    ["Camera", payload.camera?.exists ? "Yes" : "No"], ["MAC", payload.network?.mac_address],
+  ].filter(r => r[1] !== undefined && r[1] !== null && r[1] !== "");
+  document.getElementById("specs").innerHTML = rows.map(r => `<div class="spec-row"><dt>${esc(r[0])}</dt><dd>${esc(r[1])}</dd></div>`).join("");
+}
+
+function renderTests() {
+  document.getElementById("tests").innerHTML = state.tests.map(t => `
+    <div class="test" data-key="${t.key}">
+      <div class="t-head"><span class="t-name">${t.name}</span>
+        <div class="seg">
+          <button class="pass" data-v="pass">Pass</button>
+          <button class="fail" data-v="fail">Fail</button>
+        </div>
+      </div>
+      <div class="note-box"><input class="note" placeholder="Failure point (e.g. spacebar unresponsive, dead pixel lower-left)"></div>
+    </div>`).join("");
+  document.querySelectorAll(".test").forEach(card => {
+    const key = card.dataset.key;
+    card.querySelectorAll(".seg button").forEach(btn => btn.addEventListener("click", () => {
+      const v = btn.dataset.v;
+      state.results[key] = { status: v };
+      card.querySelectorAll(".seg button").forEach(b => { b.classList.remove("on", "pass", "fail"); });
+      btn.classList.add("on", v);
+      card.querySelector(".note-box").classList.toggle("show", v === "fail");
+    }));
+    card.querySelector(".note").addEventListener("input", e => {
+      if (state.results[key]) state.results[key].note = e.target.value;
+    });
+  });
+}
+
+function canSubmit() {
+  const allDone = state.tests.every(t => state.results[t.key]);
+  const missingNote = state.tests.some(t => state.results[t.key]?.status === "fail" && !(state.results[t.key]?.note || "").trim());
+  return allDone && !missingNote;
+}
+
+async function submit() {
+  const btn = document.getElementById("submit");
+  btn.disabled = true;
+  const statusEl = document.getElementById("status");
+  statusEl.className = ""; statusEl.textContent = "Uploading…";
+  try {
+    const r = await fetch("/api/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_name: document.getElementById("customer").value, test_results: state.results }) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Upload failed");
+    statusEl.className = "ok"; statusEl.textContent = "Uploaded. Laptop ID: " + data.laptopId;
+    setTimeout(() => { statusEl.textContent = "Powering off in 3…"; }, 800);
+    setTimeout(() => { statusEl.textContent = "Powering off in 2…"; }, 1800);
+    setTimeout(() => { statusEl.textContent = "Powering off in 1…"; }, 2800);
+  } catch (err) {
+    btn.disabled = false;
+    statusEl.className = "err"; statusEl.textContent = "Upload failed: " + err.message;
+  }
+}
+
+document.getElementById("submit").addEventListener("click", submit);
+document.getElementById("abort").addEventListener("click", async () => {
+  await fetch("/api/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ customer_name: "", test_results: {} }) });
+});
+document.getElementById("submit").addEventListener("change", () => { document.getElementById("submit").disabled = !canSubmit(); });
+document.querySelector("#tests").addEventListener("input", () => { document.getElementById("submit").disabled = !canSubmit(); });
+document.getElementById("customer").addEventListener("input", () => { document.getElementById("submit").disabled = !canSubmit(); });
+
+load(); renderTests();
+</script>
+</body>
+</html>
