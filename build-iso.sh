@@ -84,20 +84,28 @@ cp "${PROJECT_ROOT}/config.yaml" "${INITRAMFS}/opt/spec-hunter/" 2>/dev/null || 
 #
 # Package set = every external tool the collectors invoke (from the 8
 # collector/*.py files): dmidecode (identity/ram), lscpu (cpu), lsblk/
-# smartctl/nvme (storage), upower (battery), edid-decode (display), lshw/
-# ip/hciconfig/btmgmt (network), v4l2-ctl (camera), plus the boot hook's
-# wpa_supplicant/dhcpcd. Missing any ⇒ that collector degrades to N/A.
-# (xrandr omitted deliberately: headless Alpine has no X server, so it can
-# never work; display falls back to sysfs EDID parsing instead.)
-mkdir -p "${INITRAMFS}/etc/apk"
-cp /etc/apk/repositories* "${INITRAMFS}/etc/apk/" 2>/dev/null || true
-if ! apk add --root "${INITRAMFS}" --initdb --no-cache \
-    py3-requests py3-yaml \
-    dmidecode smartmontools nvme-cli util-linux edid-decode \
+# smartctl/nvme (storage), upower (battery), lshw/ip/hciconfig/btmgmt
+# (network), v4l2-ctl (camera), plus the boot hook's wpa_supplicant/dhcpcd.
+# Root cause of the earlier "unable to select packages": `--initdb` creates a
+# FRESH apk db in the target root, and the target had no /etc/apk/repositories,
+# so apk had no package index and resolved NOTHING. Explicit -X repos make the
+# target self-sufficient without copying any host files.
+# edid-decode is NOT in Alpine 3.21 (main/community) — with repos present it is
+# the one unresolvable name (build aborted correctly). display.py falls back to
+# /sys/class/drm/*/edid parsing without it (resolution → N/A, manufacturer
+# still collected), so it is omitted deliberately.
+# python3 is explicit — the booted Alpine standard ISO ships no interpreter,
+# and collectors run under `#!/usr/bin/env python3`.
+# FAIL FAST: an ISO without python3/tools is useless — a missing package must
+# abort the build, not emit a broken image.
+apk add --root "${INITRAMFS}" --initdb --no-cache \
+    -X https://dl-cdn.alpinelinux.org/alpine/v3.21/main \
+    -X https://dl-cdn.alpinelinux.org/alpine/v3.21/community \
+    python3 py3-requests py3-yaml \
+    dmidecode smartmontools nvme-cli util-linux \
     lshw iproute2 bluez v4l-utils upower \
-    wpa_supplicant dhcpcd; then
-    echo "  WARNING: could not install collector system tools"
-fi
+    wpa_supplicant dhcpcd \
+    || { echo "ERROR: apk add failed — collector tools missing, aborting"; exit 1; }
 
 # Create auto-start script
 mkdir -p "${INITRAMFS}/etc/local.d"
@@ -130,8 +138,13 @@ if [ -n "$SSID" ] && [ "$SSID" != "" ]; then
         # PSK; on pure-SAE networks an explicit key_mgmt is needed for some
         # versions. This covers WPA2/WPA3-transition AND pure-SAE.
         echo "key_mgmt=WPA-PSK SAE" >> /etc/wpa_supplicant/wpa_supplicant.conf
-        wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
-        dhcpcd wlan0
+        # WiFi interface isn't always wlan0 (wl*/wlp* on modern systems) —
+        # detect the wireless NIC from sysfs.
+        IFACE=$(ls /sys/class/net 2>/dev/null | grep -E '^wl' | head -1)
+        [ -z "$IFACE" ] && IFACE="wlan0"
+        echo "WiFi interface: $IFACE"
+        wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant/wpa_supplicant.conf
+        dhcpcd "$IFACE"
     fi
 fi
 

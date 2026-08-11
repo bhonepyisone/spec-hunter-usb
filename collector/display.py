@@ -45,7 +45,13 @@ def _edid_decode() -> dict:
 
 
 def _parse_edid_binary(edid_path: Path) -> dict:
-    """Parse raw EDID binary blob from sysfs."""
+    """Parse raw EDID binary blob from sysfs.
+
+    Extracts manufacturer (bytes 8-9) and resolution from the preferred
+    timing descriptor (offset 0x36 = byte 54): horizontal active is the low
+    8 bits at byte 56 plus the top nibble of byte 57; vertical active is the
+    low 8 bits at byte 59 plus the top nibble of byte 60.
+    """
     result = {}
     try:
         data = edid_path.read_bytes()
@@ -54,18 +60,20 @@ def _parse_edid_binary(edid_path: Path) -> dict:
 
         # Manufacturer ID (bytes 8-9)
         mfr_id = ((data[8] << 8) | data[9])
-        # Parse 5-5-5 bit pattern to letters
         char1 = chr(ord('A') + ((mfr_id >> 10) & 0x1F) - 1)
         char2 = chr(ord('A') + ((mfr_id >> 5) & 0x1F) - 1)
         char3 = chr(ord('A') + (mfr_id & 0x1F) - 1)
         if all(c.isalpha() for c in (char1, char2, char3)):
             result["manufacturer"] = f"{char1}{char2}{char3}"
 
-        # Product code (bytes 10-11, little-endian)
-        # Not human-readable, skip
-
-        # Basic resolution from EDID Detailed Timing Descriptors
-        # This is complex — use xrandr as a simpler method
+        # Preferred timing descriptor resolution (bytes 54-71 block).
+        # H/V active low bytes are 56/59; high nibbles are bits 7-4 of
+        # bytes 58 (horizontal) and 61 (vertical) per the DTDSD layout.
+        if len(data) >= 72:
+            h = data[56] | ((data[58] & 0xF0) << 4)
+            v = data[59] | ((data[61] & 0xF0) << 4)
+            if h and v:
+                result["resolution"] = f"{h}x{v}"
     except (OSError, IndexError):
         pass
     return result
@@ -117,6 +125,8 @@ def collect() -> dict:
                 edid_info = _parse_edid_binary(connector)
                 if edid_info.get("manufacturer"):
                     result["manufacturer"] = edid_info["manufacturer"]
+                if edid_info.get("resolution"):
+                    result["resolution"] = edid_info["resolution"]
                 break
 
     # Try xrandr as last resort for resolution

@@ -17,6 +17,7 @@ Serves a dark, mobile-first page on http://127.0.0.1:8080 on the tested laptop:
 
 import json
 import logging
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http import HTTPStatus
@@ -24,9 +25,25 @@ from pathlib import Path
 
 logger = logging.getLogger("spec-hunter.ui")
 
-HOST = "127.0.0.1"
+# LAN-wide bind: the booted Alpine is headless — no browser on the tested
+# laptop to open 127.0.0.1. The operator reaches the UI from a phone on the
+# same WiFi via the printed LAN URL.
+HOST = "0.0.0.0"
 PORT = 8080
 UI_DIR = Path(__file__).parent
+
+
+def lan_ip() -> str:
+    """Best-effort LAN IPv4 of this laptop. The UDP connect sends no packets —
+    it only selects the routing interface — so it is safe pre-network."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
 INDEX = (UI_DIR / "index.html").read_text()
 RESULT_FILE = "/tmp/last_upload.json"
 
@@ -109,7 +126,7 @@ def serve_ui(payload: dict, config, upload_fn, idle_timeout_s=300) -> Uploader:
             logger.info(f"[ui] {fmt % args}")
 
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
-    logger.info(f"=== UI ready: http://{HOST}:{PORT} ===")
+    logger.info(f"=== UI ready: http://{lan_ip()}:{PORT} — open from a phone on the same WiFi (Alpine has no browser) ===")
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     try:

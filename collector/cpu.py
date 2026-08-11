@@ -13,11 +13,15 @@ logger = logging.getLogger("collector.cpu")
 
 def _extract_generation(name: str) -> int | None:
     """Extract CPU generation from name string.
-    E.g., 'Intel Core i5-1145G7' → 11, 'Intel Core i7-1360P' → 13
+    E.g., 'Intel Core i5-1145G7' → 11, 'Intel Core i7-1360P' → 13,
+    'Intel Core i3-6100U' → 6 (NOT 61).
     """
     match = re.search(r"i[3-9]-(\d{1,2})", name)
     if match:
-        return int(match.group(1))
+        gen = int(match.group(1))
+        # 2-digit gens are 10..14 (e.g. i5-1145G7 → 11); anything else is a
+        # 1-digit gen with a model suffix (i3-6100U → 61, so → 6).
+        return gen if 10 <= gen <= 14 else gen // 10
     # AMD: Ryzen 5 5600U → 5000 series
     match = re.search(r"(\d{4})[A-Z]", name)
     if match:

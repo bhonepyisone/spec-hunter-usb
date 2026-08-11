@@ -99,7 +99,7 @@ def main() -> None:
 
     payload = assemble_payload()
 
-    logger.info("=== Starting UI — open http://127.0.0.1:8080 on THIS laptop ===")
+    logger.info(f"=== Starting UI — open http://{ui.lan_ip()}:8080 from a phone on the same WiFi ===")
     upl = ui.serve_ui(payload, config, upload)
 
     if upl.ok:

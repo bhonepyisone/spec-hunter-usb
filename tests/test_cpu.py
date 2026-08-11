@@ -10,7 +10,7 @@ class TestCpu(unittest.TestCase):
     def test_generation_extract_intel(self):
         self.assertEqual(cpu._extract_generation("Intel Core i5-1145G7"), 11)
         self.assertEqual(cpu._extract_generation("Intel Core i7-1360P"), 13)
-        self.assertEqual(cpu._extract_generation("Intel Core i3-6100U"), 61)
+        self.assertEqual(cpu._extract_generation("Intel Core i3-6100U"), 6)
 
     def test_generation_extract_amd(self):
         self.assertEqual(cpu._extract_generation("AMD Ryzen 5 5600U"), 56)

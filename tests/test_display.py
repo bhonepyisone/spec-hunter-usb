@@ -2,6 +2,7 @@
 
 import unittest
 from unittest.mock import patch
+from pathlib import Path
 from collector import display
 
 
@@ -79,6 +80,26 @@ class TestDisplay(unittest.TestCase):
         self.assertEqual(result["resolution"], "N/A")
         self.assertEqual(result["manufacturer"], "N/A")
         self.assertEqual(result["model"], "N/A")
+
+    def test_sysfs_edid_resolution_parse(self):
+        """Raw EDID: manufacturer bytes + preferred-timing resolution.
+
+        mock_open can't intercept Path.read_bytes() (it opens via io.FileIO,
+        not builtins.open), so the Path method itself must be patched.
+        """
+        data = bytearray(128)
+        data[8] = 0x30  # manufacturer "LGD" (L=12,G=7,D=4 packed into 16 bits)
+        data[9] = 0xE4
+        data[56] = 0x80  # H active low byte = 128
+        data[58] = 0x70  # H active high nibble = 7  → 1920
+        data[59] = 0x38  # V active low byte = 56
+        data[61] = 0x40  # V active high nibble = 4  → 1080
+
+        with patch("collector.display.Path.read_bytes", return_value=bytes(data)):
+            info = display._parse_edid_binary(Path("/fake/edid"))
+
+        self.assertEqual(info.get("resolution"), "1920x1080")
+        self.assertEqual(info.get("manufacturer"), "LGD")
 
     @patch("collector.display._edid_decode")
     def test_collect_with_edid(self, mock_edid):

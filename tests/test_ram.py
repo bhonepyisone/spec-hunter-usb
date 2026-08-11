@@ -1,7 +1,7 @@
-"""Unit tests for ram.py — dmidecode parsing, slot detection."""
+"""Unit tests for ram.py — dmidecode parsing, slot detection, /proc/meminfo fallback."""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, mock_open
 from collector import ram
 
 
@@ -85,14 +85,31 @@ class TestRam(unittest.TestCase):
         self.assertEqual(result["ddr_type"], "DDR4")
         self.assertEqual(result["manufacturer"], "Samsung")
 
+    @patch("collector.ram._meminfo_total_gb", return_value=None)
     @patch("collector.ram.subprocess.run")
-    def test_collect_dmidecode_failure(self, mock_run):
+    def test_collect_dmidecode_failure(self, mock_run, mock_meminfo):
         mock_run.side_effect = FileNotFoundError("dmidecode not installed")
 
         result = ram.collect()
 
         self.assertIsNone(result["total_gb"])
         self.assertEqual(result["ddr_type"], "N/A")
+
+    @patch("collector.ram._meminfo_total_gb", return_value=16.0)
+    @patch("collector.ram.subprocess.run")
+    def test_collect_dmidecode_failure_uses_meminfo(self, mock_run, mock_meminfo):
+        mock_run.side_effect = FileNotFoundError("dmidecode not installed")
+
+        result = ram.collect()
+
+        self.assertEqual(result["total_gb"], 16.0)
+
+    def test_meminfo_total_gb(self):
+        with patch(
+            "builtins.open",
+            mock_open(read_data="MemTotal:       16777216 kB\nSwapTotal:             0 kB\n"),
+        ):
+            self.assertEqual(ram._meminfo_total_gb(), 16.0)
 
 
 if __name__ == "__main__":

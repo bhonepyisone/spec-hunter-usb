@@ -88,6 +88,19 @@ def _parse_lscpu() -> dict:
     return result
 
 
+def _meminfo_total_gb() -> float | None:
+    """Fallback when dmidecode is unavailable: total RAM from /proc/meminfo."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    kb = int(line.split()[1])
+                    return round(kb / (1024 ** 2), 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 def collect() -> dict:
     """Collect RAM information.
 
@@ -106,7 +119,10 @@ def collect() -> dict:
 
     raw = _run_dmidecode()
     if not raw:
-        logger.warning("dmidecode -t 17 failed — RAM info unavailable")
+        logger.warning("dmidecode -t 17 failed — RAM fallback via /proc/meminfo")
+        total = _meminfo_total_gb()
+        if total is not None:
+            result["total_gb"] = total
         return result
 
     slots = _parse_dmidecode_ram(raw)
