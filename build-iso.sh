@@ -4,7 +4,10 @@
 # Builds a bootable Alpine Linux ISO with all collector dependencies.
 # Output: releases/spec-hunter-v1.0.iso
 #
-# Prerequisites: sudo, wget, rsync, xorriso (or mkisofs)
+# Runs inside a linux/amd64 Alpine container (see Dockerfile) or any
+# x86_64 Linux. Not macOS: xorriso extraction removes the old loop-mount
+# requirement, but initramfs must be built for x86_64 with matching Alpine
+# packages — the Docker path guarantees that.
 #
 # Usage: ./build-iso.sh [version]
 #   version defaults to "v1.0"
@@ -19,7 +22,8 @@ ISO_NAME="spec-hunter-${VERSION}.iso"
 ALPINE_ISO_URL="https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-standard-3.21.3-x86_64.iso"
 ALPINE_ISO_FILE="alpine-standard.iso"
 
-REQUIRED_TOOLS="wget unsquashfs mksquashfs xorriso rsync"
+# xorriso both unpacks and repacks the ISO (no loop-mount needed).
+REQUIRED_TOOLS="wget xorriso cpio gzip"
 MISSING=""
 for tool in $REQUIRED_TOOLS; do
     if ! command -v "$tool" &>/dev/null; then
@@ -27,24 +31,9 @@ for tool in $REQUIRED_TOOLS; do
     fi
 done
 
-# Fallback: use genisoimage if xorriso not available
-if echo "$MISSING" | grep -q "xorriso"; then
-    if command -v genisoimage &>/dev/null; then
-        MKISOFS="genisoimage"
-        MISSING=$(echo "$MISSING" | sed 's/xorriso//')
-    elif command -v mkisofs &>/dev/null; then
-        MKISOFS="mkisofs"
-        MISSING=$(echo "$MISSING" | sed 's/xorriso//')
-    else
-        MKISOFS=""
-    fi
-else
-    MKISOFS="xorriso"
-fi
-
 if [ -n "${MISSING// }" ]; then
     echo "ERROR: Missing required tools:${MISSING}"
-    echo "Install with: sudo apk add squashfs-tools xorriso rsync wget"
+    echo "Install with: apk add xorriso cpio gzip wget"
     exit 1
 fi
 
@@ -58,31 +47,28 @@ rm -rf "${WORK_DIR}"
 mkdir -p "${WORK_DIR}" "${RELEASE_DIR}"
 
 # --- Step 1: Download Alpine ISO ---
-echo "[1/5] Downloading Alpine Linux ISO..."
+echo "[1/6] Downloading Alpine Linux ISO..."
 if [ -f "${WORK_DIR}/${ALPINE_ISO_FILE}" ]; then
     echo "  Already downloaded, skipping."
 else
     wget -q --show-progress -O "${WORK_DIR}/${ALPINE_ISO_FILE}" "${ALPINE_ISO_URL}"
 fi
 
-# --- Step 2: Extract ISO ---
-echo "[2/5] Extracting ISO..."
+# --- Step 2: Extract ISO (container-safe: xorriso unpacks, no loop mount) ---
+echo "[2/6] Extracting ISO..."
 mkdir -p "${WORK_DIR}/iso"
-mkdir -p "${WORK_DIR}/iso-mount"
 
-mount -o loop "${WORK_DIR}/${ALPINE_ISO_FILE}" "${WORK_DIR}/iso-mount"
-rsync -a "${WORK_DIR}/iso-mount/" "${WORK_DIR}/iso/"
-umount "${WORK_DIR}/iso-mount"
-rmdir "${WORK_DIR}/iso-mount"
+xorriso -osirrox on -indev "${WORK_DIR}/${ALPINE_ISO_FILE}" -extract / "${WORK_DIR}/iso/" >/dev/null 2>&1
+chmod -R u+w "${WORK_DIR}/iso"
 
 # Extract initramfs
 mkdir -p "${WORK_DIR}/initramfs"
-cd "${WORK_DIR}/initramfs"
+cd "${WORK_DIR}/initramfs" || exit 1
 gunzip -c "${WORK_DIR}/iso/boot/initramfs-lts" | cpio -idm 2>/dev/null || true
 cd "${PROJECT_ROOT}"
 
 # --- Step 3: Customize initramfs ---
-echo "[3/5] Customizing initramfs..."
+echo "[3/6] Customizing initramfs..."
 
 INITRAMFS="${WORK_DIR}/initramfs"
 
@@ -92,10 +78,26 @@ cp -r "${PROJECT_ROOT}/collector/"* "${INITRAMFS}/opt/spec-hunter/collector/"
 cp "${PROJECT_ROOT}/requirements.txt" "${INITRAMFS}/opt/spec-hunter/"
 cp "${PROJECT_ROOT}/config.yaml" "${INITRAMFS}/opt/spec-hunter/" 2>/dev/null || true
 
-# Install Python packages into initramfs
-python3 -m pip install --target="${INITRAMFS}/opt/spec-hunter/lib" \
-    -r "${PROJECT_ROOT}/requirements.txt" 2>/dev/null || \
-    echo "  WARNING: pip install failed — run 'pip install -r requirements.txt' manually"
+# Dependencies: install Alpine's own musl/x86_64 packages INTO the initramfs
+# root via apk --root. Never pip-install from the build host — host packages
+# are the wrong libc/arch and break imports in the booted initramfs.
+#
+# Package set = every external tool the collectors invoke (from the 8
+# collector/*.py files): dmidecode (identity/ram), lscpu (cpu), lsblk/
+# smartctl/nvme (storage), upower (battery), edid-decode (display), lshw/
+# ip/hciconfig/btmgmt (network), v4l2-ctl (camera), plus the boot hook's
+# wpa_supplicant/dhcpcd. Missing any ⇒ that collector degrades to N/A.
+# (xrandr omitted deliberately: headless Alpine has no X server, so it can
+# never work; display falls back to sysfs EDID parsing instead.)
+mkdir -p "${INITRAMFS}/etc/apk"
+cp /etc/apk/repositories* "${INITRAMFS}/etc/apk/" 2>/dev/null || true
+if ! apk add --root "${INITRAMFS}" --initdb --no-cache \
+    py3-requests py3-yaml \
+    dmidecode smartmontools nvme-cli util-linux edid-decode \
+    lshw iproute2 bluez v4l-utils upower \
+    wpa_supplicant dhcpcd; then
+    echo "  WARNING: could not install collector system tools"
+fi
 
 # Create auto-start script
 mkdir -p "${INITRAMFS}/etc/local.d"
@@ -124,20 +126,22 @@ if [ -n "$SSID" ] && [ "$SSID" != "" ]; then
     PASS=$(grep -A3 "^wifi:" /opt/spec-hunter/config.yaml | grep "password:" | cut -d'"' -f2 2>/dev/null || echo "")
     if [ -n "$PASS" ]; then
         wpa_passphrase "$SSID" "$PASS" > /etc/wpa_supplicant/wpa_supplicant.conf
+        # Kodung_5G is WPA3-Personal (SAE). wpa_passphrase writes only the
+        # PSK; on pure-SAE networks an explicit key_mgmt is needed for some
+        # versions. This covers WPA2/WPA3-transition AND pure-SAE.
+        echo "key_mgmt=WPA-PSK SAE" >> /etc/wpa_supplicant/wpa_supplicant.conf
         wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
         dhcpcd wlan0
     fi
 fi
 
 # Run collector
-export PYTHONPATH="/opt/spec-hunter/lib:$PYTHONPATH"
 python3 /opt/spec-hunter/collector/main.py
 SCRIPT
 chmod +x "${INITRAMFS}/etc/local.d/collector.start"
 
 # Enable local service
 if [ -f "${INITRAMFS}/etc/init.d/local" ]; then
-    # Add local to boot runlevel
     mkdir -p "${INITRAMFS}/etc/runlevels/default"
     ln -sf /etc/init.d/local "${INITRAMFS}/etc/runlevels/default/local" 2>/dev/null || true
 fi
@@ -147,64 +151,39 @@ mkdir -p "${INITRAMFS}/opt/spec-hunter"
 echo "${VERSION}" > "${INITRAMFS}/opt/spec-hunter/VERSION"
 
 # --- Step 4: Repack initramfs ---
-echo "[4/5] Repacking initramfs..."
-cd "${INITRAMFS}"
+echo "[4/6] Repacking initramfs..."
+cd "${INITRAMFS}" || exit 1
 find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${WORK_DIR}/iso/boot/initramfs-lts"
 cd "${PROJECT_ROOT}"
 
 # --- Step 5: Build ISO ---
-echo "[5/5] Building ISO..."
+echo "[5/6] Building ISO..."
 
-ISO_ARGS=""
-if [ "$MKISOFS" = "xorriso" ]; then
-    xorriso -as mkisofs \
-        -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
-        -c boot/syslinux/boot.cat \
-        -b boot/syslinux/isolinux.bin \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e boot/grub/efi.img \
-        -no-emul-boot \
-        -isohybrid-gpt-basdat \
-        -o "${RELEASE_DIR}/${ISO_NAME}" \
-        "${WORK_DIR}/iso/"
-elif [ "$MKISOFS" = "genisoimage" ]; then
-    genisoimage \
-        -b boot/syslinux/isolinux.bin \
-        -c boot/syslinux/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -eltorito-alt-boot \
-        -e boot/grub/efi.img \
-        -no-emul-boot \
-        -o "${RELEASE_DIR}/${ISO_NAME}" \
-        "${WORK_DIR}/iso/"
-else
-    mkisofs \
-        -b boot/syslinux/isolinux.bin \
-        -c boot/syslinux/boot.cat \
-        -no-emul-boot \
-        -boot-load-size 4 \
-        -boot-info-table \
-        -o "${RELEASE_DIR}/${ISO_NAME}" \
-        "${WORK_DIR}/iso/"
-fi
+xorriso -as mkisofs \
+    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+    -c boot/syslinux/boot.cat \
+    -b boot/syslinux/isolinux.bin \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -eltorito-alt-boot \
+    -e boot/grub/efi.img \
+    -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -o "${RELEASE_DIR}/${ISO_NAME}" \
+    "${WORK_DIR}/iso/"
 
-# Write to USB helper
+# --- Step 6: Report ---
 if [ -f "${RELEASE_DIR}/${ISO_NAME}" ]; then
     echo ""
-    echo "=== Build Complete ==="
+    echo "[6/6] === Build Complete ==="
     echo "ISO: ${RELEASE_DIR}/${ISO_NAME}"
     echo "Size: $(du -h "${RELEASE_DIR}/${ISO_NAME}" | cut -f1)"
     echo ""
     echo "Write to USB with:"
-    echo "  sudo dd if=${RELEASE_DIR}/${ISO_NAME} of=/dev/sdX bs=4M status=progress && sync"
+    echo "  sudo dd if=${RELEASE_DIR}/${ISO_NAME} of=/dev/sbX bs=4M conv=fsync status=progress"
     echo ""
-    echo "Or use:"
-    echo "  sudo dd if=${RELEASE_DIR}/${ISO_NAME} of=/dev/sdX bs=4M conv=fsync status=progress"
+    echo "Then boot an x86_64 laptop from the USB."
 else
     echo "ERROR: ISO build failed"
     exit 1

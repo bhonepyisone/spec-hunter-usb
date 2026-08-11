@@ -17,6 +17,7 @@ Corrected workflow:
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -106,6 +107,12 @@ def main() -> None:
     else:
         logger.warning("No upload — payload saved. Powering off in 10 seconds...")
 
+    # Debug/dev guard: set SPEC_HUNTER_NO_POWEROFF=1 in the booted shell to
+    # stay up after upload instead of powering off — lets you re-test without
+    # re-flashing and re-booting. Unset in normal operation.
+    if os.environ.get("SPEC_HUNTER_NO_POWEROFF") == "1":
+        logger.warning("SPEC_HUNTER_NO_POWEROFF=1 — left running, skip poweroff")
+        return
     time.sleep(10)
     subprocess.run(["poweroff"], timeout=5)
 
